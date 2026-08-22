@@ -1,30 +1,47 @@
-name: CloudDesk
+name: Dark PC
 
 on:
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  actions: read
 
 jobs:
-  clouddesk-rdp:
+
+  dark-pc:
     runs-on: windows-latest
     timeout-minutes: 350
 
     steps:
 
       # ============================================================
-      # 1. CONECTAR EL RUNNER A TAILSCALE
+      # DARK PC - INICIO
       # ============================================================
 
-      - name: Connect Tailscale
+      - name: Dark PC - Inicio
+        shell: powershell
+        run: |
+
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "                 DARK PC"
+          Write-Host "=============================================="
+          Write-Host ""
+          Write-Host "Iniciando Dark PC..."
+          Write-Host ""
+
+
+      # ============================================================
+      # TAILSCALE
+      # ============================================================
+
+      - name: Dark PC - Instalar Tailscale
         shell: powershell
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
 
-          Write-Host "======================================"
-          Write-Host "       CONECTANDO CLOUDDESK"
-          Write-Host "======================================"
+          Write-Host "Instalando Tailscale..."
 
           if (-not $env:TAILSCALE_AUTH_KEY) {
               Write-Error "Falta TAILSCALE_AUTH_KEY."
@@ -34,8 +51,6 @@ jobs:
           $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
           if (-not (Test-Path $tailscale)) {
-
-              Write-Host "Instalando Tailscale..."
 
               $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
               $installer = "$env:TEMP\tailscale.msi"
@@ -59,24 +74,20 @@ jobs:
           }
 
           if (-not (Test-Path $tailscale)) {
-
-              Write-Error "No se pudo instalar Tailscale."
+              Write-Error "Tailscale no se pudo instalar."
               exit 1
           }
 
-          Write-Host "Iniciando Tailscale..."
+          Write-Host "Conectando Tailscale..."
 
           & $tailscale up `
             --authkey="$env:TAILSCALE_AUTH_KEY" `
-            --hostname="clouddesk-$env:GITHUB_RUN_ID"
+            --hostname="dark-pc-$env:GITHUB_RUN_ID"
 
           if ($LASTEXITCODE -ne 0) {
-
-              Write-Error "Tailscale no pudo autenticarse."
+              Write-Error "No se pudo conectar Tailscale."
               exit 1
           }
-
-          Write-Host "Tailscale conectado."
 
           $tsIP = $null
 
@@ -97,7 +108,6 @@ jobs:
           }
 
           if (-not $tsIP) {
-
               Write-Error "No se obtuvo IP de Tailscale."
               exit 1
           }
@@ -105,66 +115,136 @@ jobs:
           "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
           Write-Host ""
-          Write-Host "IP Tailscale:"
-          Write-Host $tsIP
+          Write-Host "Tailscale conectado."
+          Write-Host "IP: $tsIP"
 
 
       # ============================================================
-      # 2. CONFIGURAR RDP
+      # CREAR / CONFIGURAR USUARIO
       # ============================================================
 
-      - name: Configure Remote Desktop
+      - name: Dark PC - Configurar usuario
+        shell: powershell
+        env:
+          DARKPC_USERNAME: ${{ secrets.DARKPC_USERNAME }}
+          DARKPC_PASSWORD: ${{ secrets.DARKPC_PASSWORD }}
+        run: |
+
+          Write-Host "Configurando usuario Dark PC..."
+
+          if (-not $env:DARKPC_USERNAME) {
+              Write-Error "Falta DARKPC_USERNAME."
+              exit 1
+          }
+
+          if (-not $env:DARKPC_PASSWORD) {
+              Write-Error "Falta DARKPC_PASSWORD."
+              exit 1
+          }
+
+          $username = $env:DARKPC_USERNAME
+
+          # Evitar nombres problemáticos
+          if ($username.Length -lt 1 -or $username.Length -gt 20) {
+              Write-Error "El nombre de usuario debe tener entre 1 y 20 caracteres."
+              exit 1
+          }
+
+          $existing = Get-LocalUser `
+            -Name $username `
+            -ErrorAction SilentlyContinue
+
+          $securePassword = ConvertTo-SecureString `
+            $env:DARKPC_PASSWORD `
+            -AsPlainText `
+            -Force
+
+          if ($existing) {
+
+              Write-Host "El usuario ya existe."
+
+              Set-LocalUser `
+                -Name $username `
+                -Password $securePassword
+
+              Enable-LocalUser `
+                -Name $username
+
+          } else {
+
+              Write-Host "Creando usuario..."
+
+              New-LocalUser `
+                -Name $username `
+                -Password $securePassword `
+                -AccountNeverExpires `
+                -PasswordNeverExpires
+
+          }
+
+          Add-LocalGroupMember `
+            -Group "Administrators" `
+            -Member $username `
+            -ErrorAction SilentlyContinue
+
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -Member $username `
+            -ErrorAction SilentlyContinue
+
+          Write-Host ""
+          Write-Host "Usuario Dark PC:"
+          Write-Host $username
+
+
+      # ============================================================
+      # RDP
+      # ============================================================
+
+      - name: Dark PC - Configurar RDP
         shell: powershell
         run: |
 
-          Write-Host "======================================"
-          Write-Host "       CONFIGURANDO RDP"
-          Write-Host "======================================"
+          Write-Host "Configurando RDP..."
 
-          # Habilitar RDP
           Set-ItemProperty `
             -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' `
             -Name 'fDenyTSConnections' `
             -Value 0 `
             -Force
 
-          # NLA activado
           Set-ItemProperty `
             -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
             -Name 'UserAuthentication' `
             -Value 1 `
             -Force
 
-          # Seguridad RDP
           Set-ItemProperty `
             -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
             -Name 'SecurityLayer' `
             -Value 1 `
             -Force
 
-          # Puerto
           Set-ItemProperty `
             -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
             -Name 'PortNumber' `
             -Value 3389 `
             -Force
 
-          # Firewall
-          Enable-NetFirewallRule `
-            -DisplayGroup "Remote Desktop"
-
-          # Regla específica para CloudDesk
           netsh advfirewall firewall delete rule `
-            name="CloudDesk-RDP"
+            name="Dark-PC-RDP"
 
           netsh advfirewall firewall add rule `
-            name="CloudDesk-RDP" `
+            name="Dark-PC-RDP" `
             dir=in `
             action=allow `
             protocol=TCP `
             localport=3389
 
-          # Servicio
+          Enable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop" `
+            -ErrorAction SilentlyContinue
+
           Set-Service `
             -Name TermService `
             -StartupType Automatic
@@ -179,74 +259,411 @@ jobs:
 
 
       # ============================================================
-      # 3. CONFIGURAR RUNNERADMIN
+      # INICIALIZAR PERFIL DEL USUARIO
       # ============================================================
 
-      - name: Configure runneradmin
+      - name: Dark PC - Inicializar perfil
         shell: powershell
         env:
-          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+          DARKPC_USERNAME: ${{ secrets.DARKPC_USERNAME }}
+          DARKPC_PASSWORD: ${{ secrets.DARKPC_PASSWORD }}
         run: |
 
-          Write-Host "Configurando runneradmin..."
+          Write-Host "Preparando perfil..."
 
-          if (-not $env:RDP_PASSWORD) {
-
-              Write-Error `
-                "Falta el secret RDP_PASSWORD."
-
-              exit 1
-          }
+          $username = $env:DARKPC_USERNAME
 
           $user = Get-LocalUser `
-            -Name "runneradmin" `
-            -ErrorAction SilentlyContinue
+            -Name $username `
+            -ErrorAction Stop
 
-          if (-not $user) {
+          Write-Host "Usuario preparado:"
+          Write-Host $user.Name
 
-              Write-Error `
-                "El usuario runneradmin no existe."
 
+      # ============================================================
+      # BUSCAR BACKUP ANTERIOR
+      # ============================================================
+
+      - name: Dark PC - Buscar backup anterior
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "          BUSCANDO BACKUP DARK PC"
+          Write-Host "=============================================="
+          Write-Host ""
+
+          $headers = @{
+              Authorization = "Bearer $env:GH_TOKEN"
+              Accept = "application/vnd.github+json"
+              "X-GitHub-Api-Version" = "2026-03-10"
+          }
+
+          $repo = "${{ github.repository }}"
+
+          $url = "https://api.github.com/repos/$repo/actions/artifacts?per_page=100"
+
+          try {
+
+              $response = Invoke-RestMethod `
+                -Uri $url `
+                -Headers $headers `
+                -Method Get
+
+          }
+          catch {
+
+              Write-Host "No se pudo consultar artifacts."
+              Write-Host "Se continuará sin restauración."
+              exit 0
+          }
+
+          $artifact = $response.artifacts |
+            Where-Object {
+              $_.name -eq "dark-pc-backup" -and
+              $_.expired -eq $false
+            } |
+            Sort-Object created_at -Descending |
+            Select-Object -First 1
+
+          if (-not $artifact) {
+
+              Write-Host ""
+              Write-Host "No existe backup anterior."
+              Write-Host "Esta será la primera sesión de Dark PC."
+
+              "DARKPC_BACKUP_FOUND=false" >> $env:GITHUB_ENV
+
+              exit 0
+          }
+
+          Write-Host ""
+          Write-Host "Backup encontrado."
+          Write-Host "ID: $($artifact.id)"
+          Write-Host "Fecha: $($artifact.created_at)"
+
+          "DARKPC_BACKUP_FOUND=true" >> $env:GITHUB_ENV
+          "DARKPC_BACKUP_ID=$($artifact.id)" >> $env:GITHUB_ENV
+
+
+      # ============================================================
+      # DESCARGAR BACKUP
+      # ============================================================
+
+      - name: Dark PC - Descargar backup
+        if: env.DARKPC_BACKUP_FOUND == 'true'
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+
+          Write-Host "Descargando backup..."
+
+          $headers = @{
+              Authorization = "Bearer $env:GH_TOKEN"
+              Accept = "application/vnd.github+json"
+              "X-GitHub-Api-Version" = "2026-03-10"
+          }
+
+          $repo = "${{ github.repository }}"
+
+          $url = "https://api.github.com/repos/$repo/actions/artifacts/$env:DARKPC_BACKUP_ID/zip"
+
+          $zip = "$env:TEMP\dark-pc-backup.zip"
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -Headers $headers `
+            -OutFile $zip
+
+          if (-not (Test-Path $zip)) {
+
+              Write-Error "No se descargó el backup."
               exit 1
           }
 
-          $securePassword = ConvertTo-SecureString `
-            $env:RDP_PASSWORD `
-            -AsPlainText `
+          $restorePath = "$env:TEMP\DarkPCRestore"
+
+          if (Test-Path $restorePath) {
+              Remove-Item `
+                $restorePath `
+                -Recurse `
+                -Force
+          }
+
+          New-Item `
+            -ItemType Directory `
+            -Path $restorePath `
+            -Force |
+            Out-Null
+
+          Expand-Archive `
+            -Path $zip `
+            -DestinationPath $restorePath `
             -Force
 
-          Set-LocalUser `
-            -Name "runneradmin" `
-            -Password $securePassword
-
-          # Asegurar que está habilitado
-          Enable-LocalUser `
-            -Name "runneradmin"
-
-          # Asegurar permisos RDP
-          Add-LocalGroupMember `
-            -Group "Remote Desktop Users" `
-            -Member "runneradmin" `
-            -ErrorAction SilentlyContinue
-
-          Write-Host "runneradmin configurado."
+          Write-Host "Backup descargado."
 
 
       # ============================================================
-      # 4. COMPROBAR SERVICIO
+      # RESTAURAR ARCHIVOS
       # ============================================================
 
-      - name: Verify RDP Service
+      - name: Dark PC - Restaurar archivos
+        if: env.DARKPC_BACKUP_FOUND == 'true'
+        shell: powershell
+        env:
+          DARKPC_USERNAME: ${{ secrets.DARKPC_USERNAME }}
+        run: |
+
+          Write-Host ""
+          Write-Host "Restaurando archivos..."
+
+          $username = $env:DARKPC_USERNAME
+
+          $profilePath = "C:\Users\$username"
+
+          $backupPath = "$env:TEMP\DarkPCRestore"
+
+          if (-not (Test-Path $backupPath)) {
+
+              Write-Host "No existe directorio de restauración."
+              exit 0
+          }
+
+          # Crear perfil básico
+          New-Item `
+            -ItemType Directory `
+            -Path $profilePath `
+            -Force |
+            Out-Null
+
+          # Carpetas personales
+          $folders = @(
+              "Desktop",
+              "Documents",
+              "Downloads",
+              "Pictures",
+              "Music",
+              "Videos"
+          )
+
+          foreach ($folder in $folders) {
+
+              $source = Join-Path `
+                $backupPath `
+                "Profile\$folder"
+
+              $destination = Join-Path `
+                $profilePath `
+                $folder
+
+              if (Test-Path $source) {
+
+                  New-Item `
+                    -ItemType Directory `
+                    -Path $destination `
+                    -Force |
+                    Out-Null
+
+                  Copy-Item `
+                    "$source\*" `
+                    $destination `
+                    -Recurse `
+                    -Force `
+                    -ErrorAction SilentlyContinue
+              }
+          }
+
+          Write-Host "Archivos restaurados."
+
+
+      # ============================================================
+      # RESTAURAR PERSONALIZACIÓN
+      # ============================================================
+
+      - name: Dark PC - Restaurar personalización
+        if: env.DARKPC_BACKUP_FOUND == 'true'
         shell: powershell
         run: |
 
-          Write-Host "Comprobando TermService..."
+          Write-Host "Restaurando configuración..."
+
+          $backupPath = "$env:TEMP\DarkPCRestore"
+
+          $regPath = Join-Path `
+            $backupPath `
+            "Registry"
+
+          if (-not (Test-Path $regPath)) {
+
+              Write-Host "No hay configuración de registro."
+              exit 0
+          }
+
+          $files = Get-ChildItem `
+            $regPath `
+            -Filter "*.reg" `
+            -ErrorAction SilentlyContinue
+
+          foreach ($file in $files) {
+
+              Write-Host "Restaurando:"
+              Write-Host $file.Name
+
+              reg.exe import `
+                $file.FullName `
+                2>$null
+          }
+
+          Write-Host "Configuración restaurada."
+
+
+      # ============================================================
+      # BACKUP ACTUAL
+      # ============================================================
+
+      - name: Dark PC - Preparar backup
+        shell: powershell
+        env:
+          DARKPC_USERNAME: ${{ secrets.DARKPC_USERNAME }}
+        run: |
+
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "          PREPARANDO BACKUP DARK PC"
+          Write-Host "=============================================="
+          Write-Host ""
+
+          $username = $env:DARKPC_USERNAME
+
+          $profilePath = "C:\Users\$username"
+
+          $backup = "$env:GITHUB_WORKSPACE\DarkPCBackup"
+
+          if (Test-Path $backup) {
+
+              Remove-Item `
+                $backup `
+                -Recurse `
+                -Force
+          }
+
+          New-Item `
+            -ItemType Directory `
+            -Path $backup `
+            -Force |
+            Out-Null
+
+          New-Item `
+            -ItemType Directory `
+            -Path "$backup\Profile" `
+            -Force |
+            Out-Null
+
+          New-Item `
+            -ItemType Directory `
+            -Path "$backup\Registry" `
+            -Force |
+            Out-Null
+
+          $folders = @(
+              "Desktop",
+              "Documents",
+              "Downloads",
+              "Pictures",
+              "Music",
+              "Videos"
+          )
+
+          foreach ($folder in $folders) {
+
+              $source = Join-Path `
+                $profilePath `
+                $folder
+
+              $destination = Join-Path `
+                "$backup\Profile" `
+                $folder
+
+              if (Test-Path $source) {
+
+                  New-Item `
+                    -ItemType Directory `
+                    -Path $destination `
+                    -Force |
+                    Out-Null
+
+                  Copy-Item `
+                    "$source\*" `
+                    $destination `
+                    -Recurse `
+                    -Force `
+                    -ErrorAction SilentlyContinue
+              }
+          }
+
+          Write-Host "Exportando personalización de Windows..."
+
+          $registryKeys = @(
+              "HKCU\Software\Microsoft\Windows\CurrentVersion\Themes",
+              "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced",
+              "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects",
+              "HKCU\Control Panel\Desktop",
+              "HKCU\Control Panel\Colors"
+          )
+
+          $index = 0
+
+          foreach ($key in $registryKeys) {
+
+              $index++
+
+              $file = "$backup\Registry\settings-$index.reg"
+
+              reg.exe export `
+                "$key" `
+                "$file" `
+                /y `
+                2>$null
+          }
+
+          Write-Host ""
+          Write-Host "Backup preparado."
+          Write-Host "Ubicación:"
+          Write-Host $backup
+
+
+      # ============================================================
+      # SUBIR BACKUP
+      # ============================================================
+
+      - name: Dark PC - Guardar backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: dark-pc-backup
+          path: DarkPCBackup
+          overwrite: true
+          retention-days: 90
+          if-no-files-found: error
+
+
+      # ============================================================
+      # VERIFICAR RDP
+      # ============================================================
+
+      - name: Dark PC - Verificar RDP
+        shell: powershell
+        run: |
+
+          Write-Host "Verificando TermService..."
 
           $service = Get-Service `
             -Name TermService
-
-          Write-Host "Estado: $($service.Status)"
-          Write-Host "Inicio: $($service.StartType)"
 
           if ($service.Status -ne "Running") {
 
@@ -256,30 +673,6 @@ jobs:
               Start-Sleep -Seconds 5
           }
 
-          $service = Get-Service `
-            -Name TermService
-
-          if ($service.Status -ne "Running") {
-
-              Write-Error `
-                "TermService no está funcionando."
-
-              exit 1
-          }
-
-          Write-Host "TermService OK."
-
-
-      # ============================================================
-      # 5. COMPROBAR PUERTO 3389
-      # ============================================================
-
-      - name: Verify RDP Port
-        shell: powershell
-        run: |
-
-          Write-Host "Comprobando puerto 3389..."
-
           $listener = Get-NetTCPConnection `
             -LocalPort 3389 `
             -State Listen `
@@ -287,116 +680,26 @@ jobs:
 
           if (-not $listener) {
 
-              Restart-Service `
-                -Name TermService `
-                -Force
-
-              Start-Sleep -Seconds 10
-
-              $listener = Get-NetTCPConnection `
-                -LocalPort 3389 `
-                -State Listen `
-                -ErrorAction SilentlyContinue
-          }
-
-          if (-not $listener) {
-
-              Write-Error `
-                "3389 no está escuchando."
-
+              Write-Error "El puerto 3389 no está escuchando."
               exit 1
           }
 
-          Write-Host ""
-          Write-Host "3389 está escuchando."
-
-          $listener |
-            Format-Table `
-              LocalAddress,
-              LocalPort,
-              State,
-              OwningProcess
+          Write-Host "RDP funcionando."
 
 
       # ============================================================
-      # 6. COMPROBAR RUNNERADMIN
+      # PRUEBA TAILSCALE
       # ============================================================
 
-      - name: Verify runneradmin
+      - name: Dark PC - Verificar Tailscale
         shell: powershell
         run: |
 
-          Write-Host "Comprobando runneradmin..."
-
-          $user = Get-LocalUser `
-            -Name "runneradmin"
-
-          Write-Host ""
-          Write-Host "Usuario:"
-          Write-Host $user.Name
-
-          Write-Host ""
-          Write-Host "Activo:"
-          Write-Host $user.Enabled
-
-          Write-Host ""
-          Write-Host "Remote Desktop Users:"
-
-          Get-LocalGroupMember `
-            -Group "Remote Desktop Users" |
-            Format-Table Name, ObjectClass
-
-
-      # ============================================================
-      # 7. COMPROBAR RDP LOCAL
-      # ============================================================
-
-      - name: Test Local RDP
-        shell: powershell
-        run: |
-
-          Write-Host "Probando RDP local..."
-
-          $test = Test-NetConnection `
-            -ComputerName "127.0.0.1" `
-            -Port 3389
-
-          Write-Host ""
-          Write-Host "Resultado:"
-          Write-Host $test.TcpTestSucceeded
-
-          if (-not $test.TcpTestSucceeded) {
-
-              Write-Error `
-                "RDP no responde localmente."
-
-              exit 1
-          }
-
-          Write-Host "RDP local OK."
-
-
-      # ============================================================
-      # 8. COMPROBAR RDP POR TAILSCALE
-      # ============================================================
-
-      - name: Test Tailscale RDP
-        shell: powershell
-        run: |
-
-          Write-Host "Probando RDP mediante Tailscale..."
-
-          Write-Host ""
-          Write-Host "IP:"
-          Write-Host $env:TAILSCALE_IP
+          Write-Host "Verificando conexión Tailscale..."
 
           $test = Test-NetConnection `
             -ComputerName $env:TAILSCALE_IP `
             -Port 3389
-
-          Write-Host ""
-          Write-Host "Resultado:"
-          Write-Host $test.TcpTestSucceeded
 
           if (-not $test.TcpTestSucceeded) {
 
@@ -406,78 +709,42 @@ jobs:
               exit 1
           }
 
-          Write-Host "RDP mediante Tailscale OK."
+          Write-Host "Tailscale + RDP funcionando."
 
 
       # ============================================================
-      # 9. MOSTRAR DATOS
+      # INFORMACIÓN FINAL
       # ============================================================
 
-      - name: CloudDesk Ready
+      - name: Dark PC - Listo
         shell: powershell
         env:
-          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+          DARKPC_USERNAME: ${{ secrets.DARKPC_USERNAME }}
         run: |
 
           Write-Host ""
+          Write-Host ""
           Write-Host "=============================================="
-          Write-Host "             CLOUDDESK LISTO"
+          Write-Host "              DARK PC LISTO"
           Write-Host "=============================================="
           Write-Host ""
-
           Write-Host "PC:"
           Write-Host $env:TAILSCALE_IP
-
           Write-Host ""
-
           Write-Host "Usuario:"
-          Write-Host "runneradmin"
-
+          Write-Host $env:DARKPC_USERNAME
           Write-Host ""
-
           Write-Host "Puerto:"
           Write-Host "3389"
-
           Write-Host ""
-
           Write-Host "Gateway:"
           Write-Host "NINGUNO"
-
           Write-Host ""
-
-          Write-Host "=============================================="
-          Write-Host ""
-          Write-Host "Conecta Windows App usando:"
-          Write-Host ""
-          Write-Host "PC: $env:TAILSCALE_IP"
-          Write-Host "Usuario: runneradmin"
-          Write-Host "Gateway: Ninguno"
-          Write-Host ""
-          Write-Host "La contraseña está almacenada en"
-          Write-Host "el secret RDP_PASSWORD."
+          Write-Host "Backup:"
+          Write-Host "GUARDADO EN GITHUB ACTIONS"
           Write-Host ""
           Write-Host "=============================================="
-
-
-      # ============================================================
-      # 10. MANTENER RUNNER
-      # ============================================================
-
-      - name: Keep CloudDesk Running
-        shell: powershell
-        run: |
-
           Write-Host ""
-          Write-Host "======================================"
-          Write-Host "        CLOUDDESK ACTIVO"
-          Write-Host "======================================"
+          Write-Host "Conecta desde Windows App:"
           Write-Host ""
-
-          while ($true) {
-
-              Write-Host `
-                "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] CloudDesk activo"
-
-              Start-Sleep `
-                -Seconds 300
-          }
+          Write-Host "PC: 
