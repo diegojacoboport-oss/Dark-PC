@@ -739,18 +739,18 @@ jobs:
           # ========================================================
 
           $info = @"
-DARK PC BACKUP
-Usuario:
-$username
-Fecha:
-$(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-Runner:
-$env:GITHUB_RUN_ID
-Sistema:
-$((Get-ComputerInfo).WindowsProductName)
-Build:
-$((Get-ComputerInfo).OsBuildNumber)
-"@
+          DARK PC BACKUP
+          Usuario:
+          $username
+          Fecha:
+          $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+          Runner:
+          $env:GITHUB_RUN_ID
+          Sistema:
+          $((Get-ComputerInfo).WindowsProductName)
+          Build:
+          $((Get-ComputerInfo).OsBuildNumber)
+          "@
 
           $info |
             Out-File `
