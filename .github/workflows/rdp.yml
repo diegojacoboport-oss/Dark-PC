@@ -3,6 +3,8 @@ name: CloudDesk
 on:
   workflow_dispatch:
 
+permissions: {}
+
 jobs:
   clouddesk-rdp:
     runs-on: windows-latest
@@ -11,183 +13,7 @@ jobs:
     steps:
 
       # ============================================================
-      # 1. CONFIGURAR RDP
-      # ============================================================
-
-      - name: Configure RDP
-        shell: powershell
-        run: |
-
-          Write-Host "======================================"
-          Write-Host "       CONFIGURANDO CLOUDDESK RDP"
-          Write-Host "======================================"
-
-          # Habilitar RDP
-          Set-ItemProperty `
-            -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' `
-            -Name 'fDenyTSConnections' `
-            -Value 0 `
-            -Force
-
-          # Desactivar NLA temporalmente para diagnóstico
-          Set-ItemProperty `
-            -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name 'UserAuthentication' `
-            -Value 0 `
-            -Force
-
-          # SecurityLayer = 0
-          Set-ItemProperty `
-            -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name 'SecurityLayer' `
-            -Value 0 `
-            -Force
-
-          # Puerto RDP
-          Set-ItemProperty `
-            -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name 'PortNumber' `
-            -Value 3389 `
-            -Force
-
-          # Servicio RDP
-          Set-Service `
-            -Name TermService `
-            -StartupType Automatic
-
-          # Firewall
-          netsh advfirewall firewall delete rule `
-            name="CloudDesk-RDP"
-
-          netsh advfirewall firewall add rule `
-            name="CloudDesk-RDP" `
-            dir=in `
-            action=allow `
-            protocol=TCP `
-            localport=3389
-
-          # Reiniciar servicio
-          Restart-Service `
-            -Name TermService `
-            -Force
-
-          Start-Sleep -Seconds 5
-
-          Write-Host ""
-          Write-Host "RDP configurado."
-
-
-      # ============================================================
-      # 2. CREAR USUARIO
-      # ============================================================
-
-      - name: Create CloudDesk User
-        shell: powershell
-        run: |
-
-          Write-Host "Creando usuario CloudDesk..."
-
-          # Caracteres deliberadamente simples para evitar
-          # problemas de interpretación en clientes RDP.
-          $chars = `
-            "ABCDEFGHJKLMNPQRSTUVWXYZ" +
-            "abcdefghijkmnopqrstuvwxyz" +
-            "23456789"
-
-          $passwordChars = @()
-
-          for ($i = 0; $i -lt 16; $i++) {
-
-              $passwordChars += `
-                  $chars[
-                      (Get-Random -Minimum 0 -Maximum $chars.Length)
-                  ]
-          }
-
-          $password = -join $passwordChars
-
-          $securePassword = ConvertTo-SecureString `
-            $password `
-            -AsPlainText `
-            -Force
-
-          # Eliminar usuario anterior
-          if (
-              Get-LocalUser `
-                -Name "CloudDesk" `
-                -ErrorAction SilentlyContinue
-          ) {
-
-              Remove-LocalUser `
-                -Name "CloudDesk"
-          }
-
-          # Crear usuario
-          New-LocalUser `
-            -Name "CloudDesk" `
-            -Password $securePassword `
-            -FullName "CloudDesk User" `
-            -Description "CloudDesk RDP User" `
-            -AccountNeverExpires `
-            -PasswordNeverExpires:$true
-
-          # Administrador
-          Add-LocalGroupMember `
-            -Group "Administrators" `
-            -Member "CloudDesk"
-
-          # RDP Users
-          Add-LocalGroupMember `
-            -Group "Remote Desktop Users" `
-            -Member "CloudDesk"
-
-          # Guardar para los siguientes pasos
-          "CLOUDDESK_PASSWORD=$password" `
-            >> $env:GITHUB_ENV
-
-          Write-Host ""
-          Write-Host "Usuario creado correctamente."
-          Write-Host "Usuario: CloudDesk"
-
-
-      # ============================================================
-      # 3. INSTALAR TAILSCALE
-      # ============================================================
-
-      - name: Install Tailscale
-        shell: powershell
-        run: |
-
-          Write-Host "Instalando Tailscale..."
-
-          $url = `
-            "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-
-          $installer = `
-            "$env:TEMP\tailscale.msi"
-
-          Invoke-WebRequest `
-            -Uri $url `
-            -OutFile $installer
-
-          Start-Process `
-            msiexec.exe `
-            -ArgumentList `
-              "/i",
-              "`"$installer`"",
-              "/quiet",
-              "/norestart" `
-            -Wait
-
-          Remove-Item `
-            $installer `
-            -Force
-
-          Write-Host "Tailscale instalado."
-
-
-      # ============================================================
-      # 4. CONECTAR TAILSCALE
+      # 1. CONECTAR EL RUNNER A TAILSCALE
       # ============================================================
 
       - name: Connect Tailscale
@@ -196,26 +22,49 @@ jobs:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
 
-          Write-Host "Conectando CloudDesk a Tailscale..."
+          Write-Host "======================================"
+          Write-Host "       CONECTANDO CLOUDDESK"
+          Write-Host "======================================"
 
-          $tailscale = `
-            "$env:ProgramFiles\Tailscale\tailscale.exe"
+          if (-not $env:TAILSCALE_AUTH_KEY) {
+              Write-Error "Falta TAILSCALE_AUTH_KEY."
+              exit 1
+          }
+
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
           if (-not (Test-Path $tailscale)) {
 
-              Write-Error `
-                "No se encontró tailscale.exe."
+              Write-Host "Instalando Tailscale..."
 
+              $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+              $installer = "$env:TEMP\tailscale.msi"
+
+              Invoke-WebRequest `
+                -Uri $url `
+                -OutFile $installer
+
+              Start-Process `
+                msiexec.exe `
+                -ArgumentList `
+                  "/i",
+                  "`"$installer`"",
+                  "/quiet",
+                  "/norestart" `
+                -Wait
+
+              Remove-Item `
+                $installer `
+                -Force
+          }
+
+          if (-not (Test-Path $tailscale)) {
+
+              Write-Error "No se pudo instalar Tailscale."
               exit 1
           }
 
-          if (-not $env:TAILSCALE_AUTH_KEY) {
-
-              Write-Error `
-                "TAILSCALE_AUTH_KEY no está configurado."
-
-              exit 1
-          }
+          Write-Host "Iniciando Tailscale..."
 
           & $tailscale up `
             --authkey="$env:TAILSCALE_AUTH_KEY" `
@@ -223,9 +72,7 @@ jobs:
 
           if ($LASTEXITCODE -ne 0) {
 
-              Write-Error `
-                "Tailscale no pudo iniciar sesión."
-
+              Write-Error "Tailscale no pudo autenticarse."
               exit 1
           }
 
@@ -246,43 +93,158 @@ jobs:
                   }
               }
 
-              Start-Sleep `
-                -Seconds 5
+              Start-Sleep -Seconds 5
           }
 
           if (-not $tsIP) {
 
+              Write-Error "No se obtuvo IP de Tailscale."
+              exit 1
+          }
+
+          "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+          Write-Host ""
+          Write-Host "IP Tailscale:"
+          Write-Host $tsIP
+
+
+      # ============================================================
+      # 2. CONFIGURAR RDP
+      # ============================================================
+
+      - name: Configure Remote Desktop
+        shell: powershell
+        run: |
+
+          Write-Host "======================================"
+          Write-Host "       CONFIGURANDO RDP"
+          Write-Host "======================================"
+
+          # Habilitar RDP
+          Set-ItemProperty `
+            -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' `
+            -Name 'fDenyTSConnections' `
+            -Value 0 `
+            -Force
+
+          # NLA activado
+          Set-ItemProperty `
+            -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name 'UserAuthentication' `
+            -Value 1 `
+            -Force
+
+          # Seguridad RDP
+          Set-ItemProperty `
+            -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name 'SecurityLayer' `
+            -Value 1 `
+            -Force
+
+          # Puerto
+          Set-ItemProperty `
+            -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name 'PortNumber' `
+            -Value 3389 `
+            -Force
+
+          # Firewall
+          Enable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop"
+
+          # Regla específica para CloudDesk
+          netsh advfirewall firewall delete rule `
+            name="CloudDesk-RDP"
+
+          netsh advfirewall firewall add rule `
+            name="CloudDesk-RDP" `
+            dir=in `
+            action=allow `
+            protocol=TCP `
+            localport=3389
+
+          # Servicio
+          Set-Service `
+            -Name TermService `
+            -StartupType Automatic
+
+          Restart-Service `
+            -Name TermService `
+            -Force
+
+          Start-Sleep -Seconds 5
+
+          Write-Host "RDP configurado."
+
+
+      # ============================================================
+      # 3. CONFIGURAR RUNNERADMIN
+      # ============================================================
+
+      - name: Configure runneradmin
+        shell: powershell
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+
+          Write-Host "Configurando runneradmin..."
+
+          if (-not $env:RDP_PASSWORD) {
+
               Write-Error `
-                "Tailscale no asignó una IP."
+                "Falta el secret RDP_PASSWORD."
 
               exit 1
           }
 
-          "TAILSCALE_IP=$tsIP" `
-            >> $env:GITHUB_ENV
+          $user = Get-LocalUser `
+            -Name "runneradmin" `
+            -ErrorAction SilentlyContinue
 
-          Write-Host ""
-          Write-Host "======================================"
-          Write-Host "TAILSCALE IP"
-          Write-Host "======================================"
-          Write-Host $tsIP
-          Write-Host "======================================"
+          if (-not $user) {
+
+              Write-Error `
+                "El usuario runneradmin no existe."
+
+              exit 1
+          }
+
+          $securePassword = ConvertTo-SecureString `
+            $env:RDP_PASSWORD `
+            -AsPlainText `
+            -Force
+
+          Set-LocalUser `
+            -Name "runneradmin" `
+            -Password $securePassword
+
+          # Asegurar que está habilitado
+          Enable-LocalUser `
+            -Name "runneradmin"
+
+          # Asegurar permisos RDP
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -Member "runneradmin" `
+            -ErrorAction SilentlyContinue
+
+          Write-Host "runneradmin configurado."
 
 
       # ============================================================
-      # 5. VERIFICAR SERVICIO RDP
+      # 4. COMPROBAR SERVICIO
       # ============================================================
 
       - name: Verify RDP Service
         shell: powershell
         run: |
 
-          Write-Host "Verificando TermService..."
+          Write-Host "Comprobando TermService..."
 
           $service = Get-Service `
             -Name TermService
 
-          Write-Host ""
           Write-Host "Estado: $($service.Status)"
           Write-Host "Inicio: $($service.StartType)"
 
@@ -291,8 +253,7 @@ jobs:
               Start-Service `
                 -Name TermService
 
-              Start-Sleep `
-                -Seconds 5
+              Start-Sleep -Seconds 5
           }
 
           $service = Get-Service `
@@ -301,24 +262,23 @@ jobs:
           if ($service.Status -ne "Running") {
 
               Write-Error `
-                "TermService no está ejecutándose."
+                "TermService no está funcionando."
 
               exit 1
           }
 
-          Write-Host ""
-          Write-Host "TermService funcionando."
+          Write-Host "TermService OK."
 
 
       # ============================================================
-      # 6. VERIFICAR PUERTO 3389
+      # 5. COMPROBAR PUERTO 3389
       # ============================================================
 
       - name: Verify RDP Port
         shell: powershell
         run: |
 
-          Write-Host "Verificando puerto 3389..."
+          Write-Host "Comprobando puerto 3389..."
 
           $listener = Get-NetTCPConnection `
             -LocalPort 3389 `
@@ -327,14 +287,11 @@ jobs:
 
           if (-not $listener) {
 
-              Write-Host "3389 no está escuchando."
-
               Restart-Service `
                 -Name TermService `
                 -Force
 
-              Start-Sleep `
-                -Seconds 10
+              Start-Sleep -Seconds 10
 
               $listener = Get-NetTCPConnection `
                 -LocalPort 3389 `
@@ -345,7 +302,7 @@ jobs:
           if (-not $listener) {
 
               Write-Error `
-                "El puerto 3389 no está escuchando."
+                "3389 no está escuchando."
 
               exit 1
           }
@@ -362,80 +319,25 @@ jobs:
 
 
       # ============================================================
-      # 7. VERIFICAR FIREWALL
+      # 6. COMPROBAR RUNNERADMIN
       # ============================================================
 
-      - name: Verify Firewall
+      - name: Verify runneradmin
         shell: powershell
         run: |
 
-          Write-Host "Verificando firewall..."
-
-          netsh advfirewall firewall show rule `
-            name="CloudDesk-RDP"
-
-          Write-Host ""
-          Write-Host "Firewall configurado."
-
-
-      # ============================================================
-      # 8. VERIFICAR CONFIGURACIÓN RDP
-      # ============================================================
-
-      - name: Verify RDP Configuration
-        shell: powershell
-        run: |
-
-          Write-Host "Configuración RDP:"
-
-          $rdp = Get-ItemProperty `
-            'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
-
-          $rdptcp = Get-ItemProperty `
-            'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
-
-          Write-Host ""
-          Write-Host "fDenyTSConnections:"
-          Write-Host $rdp.fDenyTSConnections
-
-          Write-Host ""
-          Write-Host "UserAuthentication:"
-          Write-Host $rdptcp.UserAuthentication
-
-          Write-Host ""
-          Write-Host "SecurityLayer:"
-          Write-Host $rdptcp.SecurityLayer
-
-          Write-Host ""
-          Write-Host "PortNumber:"
-          Write-Host $rdptcp.PortNumber
-
-
-      # ============================================================
-      # 9. VERIFICAR USUARIO
-      # ============================================================
-
-      - name: Verify CloudDesk User
-        shell: powershell
-        run: |
-
-          Write-Host "Verificando usuario..."
+          Write-Host "Comprobando runneradmin..."
 
           $user = Get-LocalUser `
-            -Name "CloudDesk" `
-            -ErrorAction SilentlyContinue
-
-          if (-not $user) {
-
-              Write-Error `
-                "CloudDesk no existe."
-
-              exit 1
-          }
+            -Name "runneradmin"
 
           Write-Host ""
-          Write-Host "Usuario: $($user.Name)"
-          Write-Host "Activo: $($user.Enabled)"
+          Write-Host "Usuario:"
+          Write-Host $user.Name
+
+          Write-Host ""
+          Write-Host "Activo:"
+          Write-Host $user.Enabled
 
           Write-Host ""
           Write-Host "Remote Desktop Users:"
@@ -446,7 +348,7 @@ jobs:
 
 
       # ============================================================
-      # 10. PRUEBA LOCAL
+      # 7. COMPROBAR RDP LOCAL
       # ============================================================
 
       - name: Test Local RDP
@@ -455,15 +357,15 @@ jobs:
 
           Write-Host "Probando RDP local..."
 
-          $result = Test-NetConnection `
+          $test = Test-NetConnection `
             -ComputerName "127.0.0.1" `
             -Port 3389
 
           Write-Host ""
-          Write-Host "TcpTestSucceeded:"
-          Write-Host $result.TcpTestSucceeded
+          Write-Host "Resultado:"
+          Write-Host $test.TcpTestSucceeded
 
-          if (-not $result.TcpTestSucceeded) {
+          if (-not $test.TcpTestSucceeded) {
 
               Write-Error `
                 "RDP no responde localmente."
@@ -471,12 +373,11 @@ jobs:
               exit 1
           }
 
-          Write-Host ""
           Write-Host "RDP local OK."
 
 
       # ============================================================
-      # 11. PRUEBA TAILSCALE
+      # 8. COMPROBAR RDP POR TAILSCALE
       # ============================================================
 
       - name: Test Tailscale RDP
@@ -485,19 +386,19 @@ jobs:
 
           Write-Host "Probando RDP mediante Tailscale..."
 
-          $result = Test-NetConnection `
-            -ComputerName $env:TAILSCALE_IP `
-            -Port 3389
-
           Write-Host ""
           Write-Host "IP:"
           Write-Host $env:TAILSCALE_IP
 
-          Write-Host ""
-          Write-Host "TcpTestSucceeded:"
-          Write-Host $result.TcpTestSucceeded
+          $test = Test-NetConnection `
+            -ComputerName $env:TAILSCALE_IP `
+            -Port 3389
 
-          if (-not $result.TcpTestSucceeded) {
+          Write-Host ""
+          Write-Host "Resultado:"
+          Write-Host $test.TcpTestSucceeded
+
+          if (-not $test.TcpTestSucceeded) {
 
               Write-Error `
                 "RDP no responde mediante Tailscale."
@@ -505,16 +406,17 @@ jobs:
               exit 1
           }
 
-          Write-Host ""
           Write-Host "RDP mediante Tailscale OK."
 
 
       # ============================================================
-      # 12. INFORMACIÓN DE CONEXIÓN
+      # 9. MOSTRAR DATOS
       # ============================================================
 
       - name: CloudDesk Ready
         shell: powershell
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
 
           Write-Host ""
@@ -529,12 +431,7 @@ jobs:
           Write-Host ""
 
           Write-Host "Usuario:"
-          Write-Host "CloudDesk"
-
-          Write-Host ""
-
-          Write-Host "Contraseña:"
-          Write-Host $env:CLOUDDESK_PASSWORD
+          Write-Host "runneradmin"
 
           Write-Host ""
 
@@ -548,22 +445,22 @@ jobs:
 
           Write-Host ""
 
-          Write-Host "NLA:"
-          Write-Host "DESACTIVADO (PRUEBA)"
-
-          Write-Host ""
-
           Write-Host "=============================================="
-          Write-Host "Usar Windows App:"
+          Write-Host ""
+          Write-Host "Conecta Windows App usando:"
           Write-Host ""
           Write-Host "PC: $env:TAILSCALE_IP"
-          Write-Host "Usuario: CloudDesk"
+          Write-Host "Usuario: runneradmin"
           Write-Host "Gateway: Ninguno"
+          Write-Host ""
+          Write-Host "La contraseña está almacenada en"
+          Write-Host "el secret RDP_PASSWORD."
+          Write-Host ""
           Write-Host "=============================================="
 
 
       # ============================================================
-      # 13. MANTENER CLOUDDESK
+      # 10. MANTENER RUNNER
       # ============================================================
 
       - name: Keep CloudDesk Running
@@ -571,854 +468,15 @@ jobs:
         run: |
 
           Write-Host ""
-          Write-Host "CloudDesk está activo."
+          Write-Host "======================================"
+          Write-Host "        CLOUDDESK ACTIVO"
+          Write-Host "======================================"
           Write-Host ""
 
           while ($true) {
 
               Write-Host `
                 "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] CloudDesk activo"
-
-              Start-Sleep `
-                -Seconds 300
-          }            -Force
-
-          # Capa de seguridad RDP
-          Set-ItemProperty `
-            -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name 'SecurityLayer' `
-            -Value 1 `
-            -Force
-
-          # Puerto RDP
-          Set-ItemProperty `
-            -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name 'PortNumber' `
-            -Value 3389 `
-            -Force
-
-          # Configurar servicio
-          Set-Service `
-            -Name TermService `
-            -StartupType Automatic
-
-          Start-Service `
-            -Name TermService
-
-          # Firewall
-          netsh advfirewall firewall delete rule `
-            name="CloudDesk-RDP"
-
-          netsh advfirewall firewall add rule `
-            name="CloudDesk-RDP" `
-            dir=in `
-            action=allow `
-            protocol=TCP `
-            localport=3389
-
-          # Reiniciar servicio para aplicar cambios
-          Restart-Service `
-            -Name TermService `
-            -Force
-
-          Start-Sleep -Seconds 5
-
-          Write-Host ""
-          Write-Host "RDP configurado."
-
-
-      # ============================================================
-      # 2. CREAR USUARIO CLOUDDESK
-      # ============================================================
-
-      - name: Create CloudDesk User
-        shell: powershell
-        run: |
-
-          Write-Host "Creando usuario CloudDesk..."
-
-          $charSet = @{
-              Upper   = [char[]](65..90)
-              Lower   = [char[]](97..122)
-              Number  = [char[]](48..57)
-              Special = (
-                  [char[]](33..47) +
-                  [char[]](58..64) +
-                  [char[]](91..96) +
-                  [char[]](123..126)
-              )
-          }
-
-          $rawPassword = @()
-
-          $rawPassword += `
-              $charSet.Upper |
-              Get-Random -Count 4
-
-          $rawPassword += `
-              $charSet.Lower |
-              Get-Random -Count 4
-
-          $rawPassword += `
-              $charSet.Number |
-              Get-Random -Count 4
-
-          $rawPassword += `
-              $charSet.Special |
-              Get-Random -Count 4
-
-          $password = -join (
-              $rawPassword |
-              Sort-Object {
-                  Get-Random
-              }
-          )
-
-          $securePassword = ConvertTo-SecureString `
-              $password `
-              -AsPlainText `
-              -Force
-
-          # Eliminar usuario anterior si existe
-          if (
-              Get-LocalUser `
-                  -Name "CloudDesk" `
-                  -ErrorAction SilentlyContinue
-          ) {
-
-              Remove-LocalUser `
-                  -Name "CloudDesk"
-          }
-
-          # Crear usuario
-          New-LocalUser `
-              -Name "CloudDesk" `
-              -Password $securePassword `
-              -AccountNeverExpires `
-              -PasswordNeverExpires:$true
-
-          # Administrador
-          Add-LocalGroupMember `
-              -Group "Administrators" `
-              -Member "CloudDesk"
-
-          # Usuarios de escritorio remoto
-          Add-LocalGroupMember `
-              -Group "Remote Desktop Users" `
-              -Member "CloudDesk"
-
-          # Guardar contraseña para pasos posteriores
-          "CLOUDDESK_PASSWORD=$password" `
-              >> $env:GITHUB_ENV
-
-          Write-Host "Usuario CloudDesk creado correctamente."
-
-
-      # ============================================================
-      # 3. INSTALAR TAILSCALE
-      # ============================================================
-
-      - name: Install Tailscale
-        shell: powershell
-        run: |
-
-          Write-Host "Instalando Tailscale..."
-
-          $url = `
-              "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-
-          $installer = `
-              "$env:TEMP\tailscale.msi"
-
-          Invoke-WebRequest `
-              -Uri $url `
-              -OutFile $installer
-
-          Start-Process `
-              msiexec.exe `
-              -ArgumentList `
-                  "/i",
-                  "`"$installer`"",
-                  "/quiet",
-                  "/norestart" `
-              -Wait
-
-          Remove-Item `
-              $installer `
-              -Force
-
-          Write-Host "Tailscale instalado."
-
-
-      # ============================================================
-      # 4. CONECTAR TAILSCALE
-      # ============================================================
-
-      - name: Connect Tailscale
-        shell: powershell
-        env:
-          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
-        run: |
-
-          Write-Host "Conectando CloudDesk a Tailscale..."
-
-          $tailscale = `
-              "$env:ProgramFiles\Tailscale\tailscale.exe"
-
-          if (-not (Test-Path $tailscale)) {
-
-              Write-Error `
-                  "No se encontró Tailscale."
-
-              exit 1
-          }
-
-          # Conectar
-          & $tailscale up `
-              --authkey="$env:TAILSCALE_AUTH_KEY" `
-              --hostname="clouddesk-$env:GITHUB_RUN_ID"
-
-          if ($LASTEXITCODE -ne 0) {
-
-              Write-Error `
-                  "Tailscale no pudo conectarse."
-
-              exit 1
-          }
-
-          Write-Host "Tailscale conectado."
-
-          # Obtener IP
-          $tsIP = $null
-
-          for ($i = 0; $i -lt 30; $i++) {
-
-              $tsIP = & $tailscale ip -4 2>$null
-
-              if ($tsIP) {
-
-                  $tsIP = $tsIP.Trim()
-
-                  if ($tsIP) {
-                      break
-                  }
-              }
-
-              Start-Sleep `
-                  -Seconds 5
-          }
-
-          if (-not $tsIP) {
-
-              Write-Error `
-                  "Tailscale no asignó una IP."
-
-              exit 1
-          }
-
-          "TAILSCALE_IP=$tsIP" `
-              >> $env:GITHUB_ENV
-
-          Write-Host ""
-          Write-Host "======================================"
-          Write-Host "TAILSCALE IP"
-          Write-Host "======================================"
-          Write-Host $tsIP
-          Write-Host "======================================"
-
-
-      # ============================================================
-      # 5. VERIFICAR SERVICIO RDP
-      # ============================================================
-
-      - name: Verify RDP Service
-        shell: powershell
-        run: |
-
-          Write-Host "Verificando TermService..."
-
-          $service = Get-Service `
-              -Name TermService
-
-          Write-Host ""
-          Write-Host "Nombre: $($service.Name)"
-          Write-Host "Estado: $($service.Status)"
-          Write-Host "Inicio: $($service.StartType)"
-
-          if ($service.Status -ne "Running") {
-
-              Write-Host "Iniciando TermService..."
-
-              Start-Service `
-                  -Name TermService
-
-              Start-Sleep `
-                  -Seconds 5
-          }
-
-          $service = Get-Service `
-              -Name TermService
-
-          if ($service.Status -ne "Running") {
-
-              Write-Error `
-                  "TermService no está ejecutándose."
-
-              exit 1
-          }
-
-          Write-Host ""
-          Write-Host "TermService funcionando."
-
-
-      # ============================================================
-      # 6. VERIFICAR PUERTO 3389
-      # ============================================================
-
-      - name: Verify RDP Port
-        shell: powershell
-        run: |
-
-          Write-Host "Verificando puerto 3389..."
-
-          $listener = Get-NetTCPConnection `
-              -LocalPort 3389 `
-              -State Listen `
-              -ErrorAction SilentlyContinue
-
-          if (-not $listener) {
-
-              Write-Host ""
-              Write-Host "3389 no está escuchando."
-              Write-Host "Reiniciando TermService..."
-
-              Restart-Service `
-                  -Name TermService `
-                  -Force
-
-              Start-Sleep `
-                  -Seconds 10
-
-              $listener = Get-NetTCPConnection `
-                  -LocalPort 3389 `
-                  -State Listen `
-                  -ErrorAction SilentlyContinue
-          }
-
-          if (-not $listener) {
-
-              Write-Error `
-                  "El puerto 3389 no está escuchando."
-
-              exit 1
-          }
-
-          Write-Host ""
-          Write-Host "Puerto 3389 escuchando correctamente."
-
-          $listener |
-              Format-Table `
-                  LocalAddress,
-                  LocalPort,
-                  State,
-                  OwningProcess
-
-
-      # ============================================================
-      # 7. COMPROBAR FIREWALL
-      # ============================================================
-
-      - name: Verify Firewall
-        shell: powershell
-        run: |
-
-          Write-Host "Verificando firewall..."
-
-          netsh advfirewall firewall show rule `
-              name="CloudDesk-RDP"
-
-          Write-Host ""
-          Write-Host "Firewall configurado."
-
-
-      # ============================================================
-      # 8. COMPROBAR CONFIGURACIÓN RDP
-      # ============================================================
-
-      - name: Verify RDP Registry
-        shell: powershell
-        run: |
-
-          Write-Host "Configuración RDP:"
-
-          $rdp = Get-ItemProperty `
-              'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
-
-          $rdptcp = Get-ItemProperty `
-              'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
-
-          Write-Host ""
-          Write-Host "fDenyTSConnections:"
-          Write-Host $rdp.fDenyTSConnections
-
-          Write-Host ""
-          Write-Host "UserAuthentication:"
-          Write-Host $rdptcp.UserAuthentication
-
-          Write-Host ""
-          Write-Host "SecurityLayer:"
-          Write-Host $rdptcp.SecurityLayer
-
-          Write-Host ""
-          Write-Host "PortNumber:"
-          Write-Host $rdptcp.PortNumber
-
-
-      # ============================================================
-      # 9. COMPROBAR USUARIO
-      # ============================================================
-
-      - name: Verify CloudDesk User
-        shell: powershell
-        run: |
-
-          Write-Host "Verificando usuario..."
-
-          $user = Get-LocalUser `
-              -Name "CloudDesk" `
-              -ErrorAction SilentlyContinue
-
-          if (-not $user) {
-
-              Write-Error `
-                  "El usuario CloudDesk no existe."
-
-              exit 1
-          }
-
-          Write-Host ""
-          Write-Host "Usuario:"
-          Write-Host $user.Name
-
-          Write-Host ""
-          Write-Host "Activo:"
-          Write-Host $user.Enabled
-
-          Write-Host ""
-          Write-Host "Miembros de Remote Desktop Users:"
-
-          Get-LocalGroupMember `
-              -Group "Remote Desktop Users" |
-              Format-Table Name, ObjectClass
-
-
-      # ============================================================
-      # 10. PRUEBA LOCAL
-      # ============================================================
-
-      - name: Test Local RDP
-        shell: powershell
-        run: |
-
-          Write-Host "Probando RDP localmente..."
-
-          $localTest = Test-NetConnection `
-              -ComputerName "127.0.0.1" `
-              -Port 3389
-
-          Write-Host ""
-          Write-Host "Puerto local:"
-          Write-Host $localTest.TcpTestSucceeded
-
-          if (-not $localTest.TcpTestSucceeded) {
-
-              Write-Error `
-                  "RDP no responde localmente."
-
-              exit 1
-          }
-
-          Write-Host ""
-          Write-Host "RDP funciona localmente."
-
-
-      # ============================================================
-      # 11. PRUEBA MEDIANTE TAILSCALE
-      # ============================================================
-
-      - name: Test Tailscale RDP
-        shell: powershell
-        run: |
-
-          Write-Host "Probando conexión RDP mediante Tailscale..."
-
-          Write-Host ""
-          Write-Host "IP:"
-          Write-Host $env:TAILSCALE_IP
-
-          $remoteTest = Test-NetConnection `
-              -ComputerName $env:TAILSCALE_IP `
-              -Port 3389
-
-          Write-Host ""
-          Write-Host "Puerto Tailscale:"
-          Write-Host $remoteTest.TcpTestSucceeded
-
-          if (-not $remoteTest.TcpTestSucceeded) {
-
-              Write-Error `
-                  "El puerto 3389 no responde mediante Tailscale."
-
-              exit 1
-          }
-
-          Write-Host ""
-          Write-Host "RDP accesible mediante Tailscale."
-
-
-      # ============================================================
-      # 12. MOSTRAR INFORMACIÓN DE CONEXIÓN
-      # ============================================================
-
-      - name: CloudDesk Ready
-        shell: powershell
-        run: |
-
-          Write-Host ""
-          Write-Host ""
-          Write-Host "=============================================="
-          Write-Host "          CLOUDDESK ESTA LISTO"
-          Write-Host "=============================================="
-          Write-Host ""
-          Write-Host "PC:"
-          Write-Host $env:TAILSCALE_IP
-          Write-Host ""
-          Write-Host "Usuario:"
-          Write-Host "CloudDesk"
-          Write-Host ""
-          Write-Host "Contraseña:"
-          Write-Host $env:CLOUDDESK_PASSWORD
-          Write-Host ""
-          Write-Host "Puerto:"
-          Write-Host "3389"
-          Write-Host ""
-          Write-Host "Gateway:"
-          Write-Host "NINGUNO"
-          Write-Host ""
-          Write-Host "=============================================="
-          Write-Host ""
-          Write-Host "Conecta desde Windows App usando:"
-          Write-Host ""
-          Write-Host "PC: $env:TAILSCALE_IP"
-          Write-Host "Usuario: CloudDesk"
-          Write-Host ""
-          Write-Host "=============================================="
-
-
-      # ============================================================
-      # 13. MANTENER RUNNER ACTIVO
-      # ============================================================
-
-      - name: Keep CloudDesk Running
-        shell: powershell
-        run: |
-
-          Write-Host ""
-          Write-Host "CloudDesk está activo."
-          Write-Host "El runner permanecerá disponible."
-          Write-Host ""
-
-          while ($true) {
-
-              Write-Host `
-                  "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] CloudDesk activo"
-
-              Start-Sleep `
-                  -Seconds 300
-          }          # Seguridad RDP estándar
-          Set-ItemProperty `
-            -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name 'SecurityLayer' `
-            -Value 1 `
-            -Force
-
-          # Configurar el servicio
-          Set-Service `
-            -Name TermService `
-            -StartupType Automatic
-
-          Start-Service `
-            -Name TermService
-
-          # Firewall para RDP
-          netsh advfirewall firewall delete rule `
-            name="CloudDesk-RDP"
-
-          netsh advfirewall firewall add rule `
-            name="CloudDesk-RDP" `
-            dir=in `
-            action=allow `
-            protocol=TCP `
-            localport=3389
-
-          # Asegurar que RDP esté escuchando
-          $listener = Get-NetTCPConnection `
-            -LocalPort 3389 `
-            -State Listen `
-            -ErrorAction SilentlyContinue
-
-          if (-not $listener) {
-
-              Write-Host "RDP todavía no escucha. Reiniciando servicio..."
-
-              Restart-Service `
-                -Name TermService `
-                -Force
-
-              Start-Sleep -Seconds 5
-
-              $listener = Get-NetTCPConnection `
-                -LocalPort 3389 `
-                -State Listen `
-                -ErrorAction SilentlyContinue
-          }
-
-          if (-not $listener) {
-
-              Write-Error `
-                "El puerto 3389 no está escuchando."
-
-              exit 1
-          }
-
-          Write-Host ""
-          Write-Host "======================================"
-          Write-Host "RDP ESCUCHANDO EN 3389"
-          Write-Host "======================================"
-
-
-      # ============================================================
-      # 2. CREAR USUARIO RDP
-      # ============================================================
-
-      - name: Create CloudDesk User
-        shell: powershell
-        run: |
-
-          Write-Host "Creando usuario CloudDesk..."
-
-          $charSet = @{
-              Upper   = [char[]](65..90)
-              Lower   = [char[]](97..122)
-              Number  = [char[]](48..57)
-              Special = ([char[]](33..47) +
-                         [char[]](58..64) +
-                         [char[]](91..96) +
-                         [char[]](123..126))
-          }
-
-          $rawPassword = @()
-
-          $rawPassword += `
-            $charSet.Upper |
-            Get-Random -Count 4
-
-          $rawPassword += `
-            $charSet.Lower |
-            Get-Random -Count 4
-
-          $rawPassword += `
-            $charSet.Number |
-            Get-Random -Count 4
-
-          $rawPassword += `
-            $charSet.Special |
-            Get-Random -Count 4
-
-          $password = -join (
-            $rawPassword |
-            Sort-Object { Get-Random }
-          )
-
-          $securePassword = ConvertTo-SecureString `
-            $password `
-            -AsPlainText `
-            -Force
-
-          if (Get-LocalUser `
-              -Name "CloudDesk" `
-              -ErrorAction SilentlyContinue) {
-
-              Remove-LocalUser `
-                -Name "CloudDesk"
-          }
-
-          New-LocalUser `
-            -Name "CloudDesk" `
-            -Password $securePassword `
-            -AccountNeverExpires
-
-          Add-LocalGroupMember `
-            -Group "Administrators" `
-            -Member "CloudDesk"
-
-          Add-LocalGroupMember `
-            -Group "Remote Desktop Users" `
-            -Member "CloudDesk"
-
-          "CLOUDDESK_PASSWORD=$password" `
-            >> $env:GITHUB_ENV
-
-          Write-Host "Usuario CloudDesk creado."
-
-
-      # ============================================================
-      # 3. INSTALAR TAILSCALE
-      # ============================================================
-
-      - name: Install Tailscale
-        shell: powershell
-        run: |
-
-          Write-Host "Instalando Tailscale..."
-
-          $url = `
-            "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-
-          $installer = `
-            "$env:TEMP\tailscale.msi"
-
-          Invoke-WebRequest `
-            -Uri $url `
-            -OutFile $installer
-
-          Start-Process `
-            msiexec.exe `
-            -ArgumentList `
-              "/i",
-              "`"$installer`"",
-              "/quiet",
-              "/norestart" `
-            -Wait
-
-          Remove-Item `
-            $installer `
-            -Force
-
-          Write-Host "Tailscale instalado."
-
-
-      # ============================================================
-      # 4. CONECTAR TAILSCALE
-      # ============================================================
-
-      - name: Connect Tailscale
-        shell: powershell
-        env:
-          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
-        run: |
-
-          Write-Host "Conectando CloudDesk a Tailscale..."
-
-          $tailscale = `
-            "$env:ProgramFiles\Tailscale\tailscale.exe"
-
-          & $tailscale up `
-            --authkey="$env:TAILSCALE_AUTH_KEY" `
-            --hostname="clouddesk-$env:GITHUB_RUN_ID"
-
-          $tsIP = $null
-
-          for ($i = 0; $i -lt 20; $i++) {
-
-              $tsIP = & $tailscale ip -4
-
-              $tsIP = $tsIP.Trim()
-
-              if ($tsIP) {
-                  break
-              }
-
-              Start-Sleep `
-                -Seconds 5
-          }
-
-          if (-not $tsIP) {
-
-              Write-Error `
-                "No se pudo obtener la IP de Tailscale."
-
-              exit 1
-          }
-
-          "TAILSCALE_IP=$tsIP" `
-            >> $env:GITHUB_ENV
-
-          Write-Host ""
-          Write-Host "Tailscale conectado."
-          Write-Host "IP: $tsIP"
-
-
-      # ============================================================
-      # 5. COMPROBAR RDP
-      # ============================================================
-
-      - name: Test RDP
-        shell: powershell
-        run: |
-
-          Write-Host "Comprobando puerto RDP..."
-
-          $result = `
-            Test-NetConnection `
-              -ComputerName $env:TAILSCALE_IP `
-              -Port 3389
-
-          if (-not $result.TcpTestSucceeded) {
-
-              Write-Error `
-                "El puerto RDP no responde."
-
-              exit 1
-          }
-
-          Write-Host ""
-          Write-Host "======================================"
-          Write-Host "       CLOUDDESK ESTA LISTO"
-          Write-Host "======================================"
-          Write-Host ""
-          Write-Host "IP:"
-          Write-Host $env:TAILSCALE_IP
-          Write-Host ""
-          Write-Host "Usuario:"
-          Write-Host "CloudDesk"
-          Write-Host ""
-          Write-Host "Contraseña:"
-          Write-Host $env:CLOUDDESK_PASSWORD
-          Write-Host ""
-          Write-Host "Puerto:"
-          Write-Host "3389"
-          Write-Host ""
-          Write-Host "======================================"
-
-
-      # ============================================================
-      # 6. MANTENER EL RDP ENCENDIDO
-      # ============================================================
-
-      - name: Keep CloudDesk Running
-        shell: powershell
-        run: |
-
-          Write-Host ""
-          Write-Host "CloudDesk está activo."
-          Write-Host "No cierres este workflow."
-          Write-Host ""
-
-          while ($true) {
-
-              Write-Host `
-                "[$(Get-Date)] CloudDesk activo..."
 
               Start-Sleep `
                 -Seconds 300
