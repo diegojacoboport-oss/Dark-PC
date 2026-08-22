@@ -1,0 +1,904 @@
+name: Dark PC
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  dark-pc:
+    runs-on: windows-latest
+    timeout-minutes: 350
+
+    steps:
+
+      - name: Dark PC - Inicio
+        shell: powershell
+        run: |
+          Write-Host "=============================================="
+          Write-Host "                 DARK PC"
+          Write-Host "=============================================="
+          Write-Host "Iniciando Dark PC..."
+
+      - name: Dark PC - Hardware
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "===== HARDWARE ====="
+
+          $computer = Get-ComputerInfo
+
+          Write-Host "Sistema: $($computer.WindowsProductName)"
+          Write-Host "Versión: $($computer.WindowsVersion)"
+          Write-Host "Build: $($computer.OsBuildNumber)"
+
+          Write-Host ""
+          Write-Host "CPU"
+
+          Get-CimInstance Win32_Processor | ForEach-Object {
+              Write-Host "CPU: $($_.Name)"
+              Write-Host "Núcleos: $($_.NumberOfCores)"
+              Write-Host "Hilos: $($_.NumberOfLogicalProcessors)"
+          }
+
+          Write-Host ""
+          Write-Host "RAM"
+
+          $ram = Get-CimInstance Win32_ComputerSystem
+
+          Write-Host ("RAM: {0:N2} GB" -f `
+              ($ram.TotalPhysicalMemory / 1GB))
+
+          Write-Host ""
+          Write-Host "DISCOS"
+
+          Get-CimInstance Win32_LogicalDisk |
+              Where-Object DriveType -eq 3 |
+              ForEach-Object {
+
+                  Write-Host "$($_.DeviceID) - " +
+                    "Tamaño: $([math]::Round($_.Size / 1GB,2)) GB - " +
+                    "Libre: $([math]::Round($_.FreeSpace / 1GB,2)) GB"
+              }
+
+          Write-Host ""
+          Write-Host "GPU"
+
+          Get-CimInstance Win32_VideoController |
+              ForEach-Object {
+
+                  Write-Host "GPU: $($_.Name)"
+
+                  if ($_.AdapterRAM) {
+                      Write-Host "VRAM: $([math]::Round($_.AdapterRAM / 1GB,2)) GB"
+                  }
+              }
+
+      - name: Dark PC - Instalar Tailscale
+        shell: powershell
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+
+          Write-Host "Instalando Tailscale..."
+
+          if (-not $env:TAILSCALE_AUTH_KEY) {
+              Write-Error "Falta el Secret TAILSCALE_AUTH_KEY."
+              exit 1
+          }
+
+          $tailscale = `
+              "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          if (-not (Test-Path $tailscale)) {
+
+              $url = `
+                "https://pkgs.tailscale.com/stable/" +
+                "tailscale-setup-1.82.0-amd64.msi"
+
+              $installer = `
+                "$env:TEMP\tailscale.msi"
+
+              Invoke-WebRequest `
+                -Uri $url `
+                -OutFile $installer
+
+              Start-Process `
+                msiexec.exe `
+                -ArgumentList `
+                  "/i",
+                  "`"$installer`"",
+                  "/quiet",
+                  "/norestart" `
+                -Wait
+
+              Remove-Item `
+                $installer `
+                -Force
+          }
+
+          if (-not (Test-Path $tailscale)) {
+              Write-Error "Tailscale no se pudo instalar."
+              exit 1
+          }
+
+          Write-Host "Conectando Tailscale..."
+
+          & $tailscale up `
+            --authkey="$env:TAILSCALE_AUTH_KEY" `
+            --hostname="dark-pc-$env:GITHUB_RUN_ID"
+
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "No se pudo conectar Tailscale."
+              exit 1
+          }
+
+          $tsIP = $null
+
+          for ($i = 0; $i -lt 30; $i++) {
+
+              $tsIP = `
+                & $tailscale ip -4 2>$null
+
+              if ($tsIP) {
+
+                  $tsIP = $tsIP.Trim()
+
+                  if ($tsIP) {
+                      break
+                  }
+              }
+
+              Start-Sleep -Seconds 5
+          }
+
+          if (-not $tsIP) {
+              Write-Error "Tailscale no entregó una IP."
+              exit 1
+          }
+
+          "TAILSCALE_IP=$tsIP" `
+            >> $env:GITHUB_ENV
+
+          Write-Host ""
+          Write-Host "Tailscale conectado."
+          Write-Host "IP: $tsIP"
+
+      - name: Dark PC - Usuario
+        shell: powershell
+        env:
+          DARKPC_USERNAME: ${{ secrets.DARKPC_USERNAME }}
+          DARKPC_PASSWORD: ${{ secrets.DARKPC_PASSWORD }}
+        run: |
+
+          if (-not $env:DARKPC_USERNAME) {
+              Write-Error "Falta DARKPC_USERNAME."
+              exit 1
+          }
+
+          if (-not $env:DARKPC_PASSWORD) {
+              Write-Error "Falta DARKPC_PASSWORD."
+              exit 1
+          }
+
+          $username = $env:DARKPC_USERNAME
+
+          $securePassword = `
+            ConvertTo-SecureString `
+              $env:DARKPC_PASSWORD `
+              -AsPlainText `
+              -Force
+
+          $existing = `
+            Get-LocalUser `
+              -Name $username `
+              -ErrorAction SilentlyContinue
+
+          if ($existing) {
+
+              Write-Host "Actualizando usuario..."
+
+              Set-LocalUser `
+                -Name $username `
+                -Password $securePassword
+
+              Enable-LocalUser `
+                -Name $username
+
+          } else {
+
+              Write-Host "Creando usuario..."
+
+              New-LocalUser `
+                -Name $username `
+                -Password $securePassword `
+                -AccountNeverExpires
+          }
+
+          Add-LocalGroupMember `
+            -Group "Administrators" `
+            -Member $username `
+            -ErrorAction SilentlyContinue
+
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -Member $username `
+            -ErrorAction SilentlyContinue
+
+          Write-Host "Usuario Dark PC configurado."
+
+      - name: Dark PC - RDP
+        shell: powershell
+        run: |
+
+          Write-Host "Configurando RDP..."
+
+          Set-ItemProperty `
+            -Path `
+              'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' `
+            -Name fDenyTSConnections `
+            -Value 0 `
+            -Force
+
+          Set-ItemProperty `
+            -Path `
+              'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name UserAuthentication `
+            -Value 1 `
+            -Force
+
+          Set-ItemProperty `
+            -Path `
+              'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name SecurityLayer `
+            -Value 1 `
+            -Force
+
+          Set-ItemProperty `
+            -Path `
+              'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name PortNumber `
+            -Value 3389 `
+            -Force
+
+          netsh advfirewall firewall `
+            delete rule `
+            name="Dark-PC-RDP" `
+            2>$null
+
+          netsh advfirewall firewall `
+            add rule `
+            name="Dark-PC-RDP" `
+            dir=in `
+            action=allow `
+            protocol=TCP `
+            localport=3389
+
+          Enable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop" `
+            -ErrorAction SilentlyContinue
+
+          Set-Service `
+            -Name TermService `
+            -StartupType Automatic
+
+          Restart-Service `
+            -Name TermService `
+            -Force
+
+          Start-Sleep -Seconds 5
+
+          Write-Host "RDP configurado."
+
+      - name: Dark PC - Tema oscuro
+        shell: powershell
+        run: |
+
+          Write-Host "Aplicando tema oscuro..."
+
+          $key = `
+            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+
+          New-Item `
+            -Path $key `
+            -Force |
+            Out-Null
+
+          Set-ItemProperty `
+            -Path $key `
+            -Name AppsUseLightTheme `
+            -Value 0 `
+            -Type DWord
+
+          Set-ItemProperty `
+            -Path $key `
+            -Name SystemUsesLightTheme `
+            -Value 0 `
+            -Type DWord
+
+          Write-Host "Tema oscuro activado."
+
+      - name: Dark PC - Instalar aplicaciones
+        shell: powershell
+        run: |
+
+          Write-Host "Instalando aplicaciones..."
+
+          $apps = @(
+            "GodotEngine.GodotEngine",
+            "Opera.Opera",
+            "Valve.Steam",
+            "Unity.UnityHub",
+            "7zip.7zip",
+            "Git.Git",
+            "Microsoft.VisualStudioCode"
+          )
+
+          foreach ($app in $apps) {
+
+              Write-Host ""
+              Write-Host "Instalando $app..."
+
+              winget install `
+                --id $app `
+                --exact `
+                --silent `
+                --accept-package-agreements `
+                --accept-source-agreements `
+                --disable-interactivity
+
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Warning `
+                    "No se pudo instalar $app."
+              }
+          }
+
+          Write-Host ""
+          Write-Host "Aplicaciones terminadas."
+
+      
+      - name: Dark PC - Preparar restauración
+        shell: powershell
+        run: |
+
+          $path = `
+            "$env:TEMP\DarkPCRestore"
+
+          if (Test-Path $path) {
+
+              Remove-Item `
+                $path `
+                -Recurse `
+                -Force
+          }
+
+          New-Item `
+            -ItemType Directory `
+            -Path $path `
+            -Force |
+            Out-Null
+
+          Write-Host "Restauración preparada."
+
+      - name: Dark PC - Buscar backup
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+
+          Write-Host "Buscando backup..."
+
+          $headers = @{
+              Authorization = "Bearer $env:GH_TOKEN"
+              Accept = "application/vnd.github+json"
+              "X-GitHub-Api-Version" = "2022-11-28"
+          }
+
+          $repo = "${{ github.repository }}"
+
+          $url = `
+            "https://api.github.com/repos/$repo/actions/artifacts?per_page=100"
+
+          try {
+
+              $response = `
+                Invoke-RestMethod `
+                  -Uri $url `
+                  -Headers $headers `
+                  -Method Get `
+                  -ErrorAction Stop
+
+          } catch {
+
+              Write-Warning `
+                "No se pudo consultar el backup."
+
+              "DARKPC_BACKUP_FOUND=false" `
+                >> $env:GITHUB_ENV
+
+              exit 0
+          }
+
+          $artifact = `
+            $response.artifacts |
+            Where-Object {
+                $_.name -eq "dark-pc-backup" `
+                -and $_.expired -eq $false
+            } |
+            Sort-Object created_at -Descending |
+            Select-Object -First 1
+
+          if (-not $artifact) {
+
+              Write-Host "No hay backup anterior."
+
+              "DARKPC_BACKUP_FOUND=false" `
+                >> $env:GITHUB_ENV
+
+              exit 0
+          }
+
+          "DARKPC_BACKUP_FOUND=true" `
+            >> $env:GITHUB_ENV
+
+          "DARKPC_BACKUP_ID=$($artifact.id)" `
+            >> $env:GITHUB_ENV
+
+          Write-Host "Backup encontrado."
+          Write-Host "Fecha: $($artifact.created_at)"
+
+      - name: Dark PC - Descargar backup
+        if: env.DARKPC_BACKUP_FOUND == 'true'
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+
+          Write-Host "Descargando backup..."
+
+          $headers = @{
+              Authorization = "Bearer $env:GH_TOKEN"
+              Accept = "application/vnd.github+json"
+              "X-GitHub-Api-Version" = "2022-11-28"
+          }
+
+          $repo = "${{ github.repository }}"
+
+          $url = `
+            "https://api.github.com/repos/$repo/actions/artifacts/" +
+            "$env:DARKPC_BACKUP_ID/zip"
+
+          $zip = `
+            "$env:TEMP\dark-pc-backup.zip"
+
+          $restorePath = `
+            "$env:TEMP\DarkPCRestore"
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -Headers $headers `
+            -OutFile $zip
+
+          Expand-Archive `
+            -Path $zip `
+            -DestinationPath $restorePath `
+            -Force
+
+          Write-Host "Backup descargado."
+      - name: Dark PC - Restaurar archivos
+        if: env.DARKPC_BACKUP_FOUND == 'true'
+        shell: powershell
+        env:
+          DARKPC_USERNAME: ${{ secrets.DARKPC_USERNAME }}
+        run: |
+
+          Write-Host "Restaurando archivos..."
+
+          $username = $env:DARKPC_USERNAME
+          $profilePath = "C:\Users\$username"
+          $backupPath = "$env:TEMP\DarkPCRestore"
+
+          $folders = @(
+              "Desktop",
+              "Documents",
+              "Downloads",
+              "Pictures",
+              "Music",
+              "Videos"
+          )
+
+          foreach ($folder in $folders) {
+
+              $source = `
+                Join-Path `
+                  $backupPath `
+                  "Profile\$folder"
+
+              $destination = `
+                Join-Path `
+                  $profilePath `
+                  $folder
+
+              if (Test-Path $source) {
+
+                  New-Item `
+                    -ItemType Directory `
+                    -Path $destination `
+                    -Force |
+                    Out-Null
+
+                  Copy-Item `
+                    "$source\*" `
+                    $destination `
+                    -Recurse `
+                    -Force `
+                    -ErrorAction SilentlyContinue
+
+                  Write-Host "Restaurado: $folder"
+              }
+          }
+
+          Write-Host "Archivos restaurados."
+
+
+      - name: Dark PC - Restaurar personalización
+        if: env.DARKPC_BACKUP_FOUND == 'true'
+        shell: powershell
+        run: |
+
+          Write-Host ""
+          Write-Host "Restaurando configuración..."
+
+          $regPath = `
+            "$env:TEMP\DarkPCRestore\Registry"
+
+          if (-not (Test-Path $regPath)) {
+
+              Write-Host `
+                "No existe backup de registro."
+
+              exit 0
+          }
+
+          $files = `
+            Get-ChildItem `
+              -Path $regPath `
+              -Filter "*.reg" `
+              -ErrorAction SilentlyContinue
+
+          foreach ($file in $files) {
+
+              Write-Host ""
+              Write-Host `
+                "Restaurando: $($file.Name)"
+
+              # reg.exe puede escribir
+              # "The operation completed successfully"
+              # en stderr aunque la operación sea correcta.
+              # Capturamos esa salida para evitar
+              # falsos errores de PowerShell.
+
+              $output = `
+                cmd.exe /c `
+                "reg.exe import `"$($file.FullName)`" 2>&1"
+
+              $exitCode = $LASTEXITCODE
+
+              if ($exitCode -eq 0) {
+
+                  Write-Host `
+                    "OK: $($file.Name)"
+
+              } else {
+
+                  Write-Warning `
+                    "No se pudo restaurar $($file.Name)"
+
+                  Write-Warning `
+                    "$output"
+              }
+          }
+
+          Write-Host ""
+          Write-Host "Personalización restaurada."
+      - name: Dark PC - Preparar nuevo backup
+        shell: powershell
+        env:
+          DARKPC_USERNAME: ${{ secrets.DARKPC_USERNAME }}
+        run: |
+
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "          PREPARANDO BACKUP DARK PC"
+          Write-Host "=============================================="
+
+          $username = `
+            $env:DARKPC_USERNAME
+
+          $profilePath = `
+            "C:\Users\$username"
+
+          $backup = `
+            "$env:GITHUB_WORKSPACE\DarkPCBackup"
+
+          if (Test-Path $backup) {
+
+              Remove-Item `
+                $backup `
+                -Recurse `
+                -Force
+          }
+
+          New-Item `
+            -ItemType Directory `
+            -Path "$backup\Profile" `
+            -Force |
+            Out-Null
+
+          New-Item `
+            -ItemType Directory `
+            -Path "$backup\Registry" `
+            -Force |
+            Out-Null
+
+
+          # ========================================================
+          # CARPETAS PERSONALES
+          # ========================================================
+
+          $folders = @(
+              "Desktop",
+              "Documents",
+              "Downloads",
+              "Pictures",
+              "Music",
+              "Videos"
+          )
+
+          foreach ($folder in $folders) {
+
+              $source = `
+                Join-Path `
+                  $profilePath `
+                  $folder
+
+              $destination = `
+                Join-Path `
+                  "$backup\Profile" `
+                  $folder
+
+              if (Test-Path $source) {
+
+                  New-Item `
+                    -ItemType Directory `
+                    -Path $destination `
+                    -Force |
+                    Out-Null
+
+                  Copy-Item `
+                    "$source\*" `
+                    $destination `
+                    -Recurse `
+                    -Force `
+                    -ErrorAction SilentlyContinue
+
+                  Write-Host `
+                    "Backup: $folder"
+              }
+          }
+
+
+          # ========================================================
+          # CONFIGURACIÓN DE WINDOWS
+          # ========================================================
+
+          Write-Host ""
+          Write-Host "Guardando personalización..."
+
+          $registryKeys = @(
+              "HKCU\Software\Microsoft\Windows\CurrentVersion\Themes",
+              "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced",
+              "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects",
+              "HKCU\Control Panel\Desktop",
+              "HKCU\Control Panel\Colors"
+          )
+
+          $index = 0
+
+          foreach ($key in $registryKeys) {
+
+              $index++
+
+              $file = `
+                "$backup\Registry\settings-$index.reg"
+
+              $null = `
+                & reg.exe export `
+                  "$key" `
+                  "$file" `
+                  /y `
+                  2>&1
+
+              if ($LASTEXITCODE -eq 0) {
+
+                  Write-Host `
+                    "Guardado: $key"
+
+              } else {
+
+                  Write-Warning `
+                    "No se pudo guardar: $key"
+              }
+          }
+
+
+          # ========================================================
+          # INFORMACIÓN DEL BACKUP
+          # ========================================================
+
+          $info = @"DARK PC BACKUP
+          Usuario:
+          $username
+          Fecha:
+          $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+          Runner:
+          $env:GITHUB_RUN_ID
+          Sistema:
+          $((Get-ComputerInfo).WindowsProductName)
+          Build:
+          $((Get-ComputerInfo).OsBuildNumber)"@
+
+          $info |
+            Out-File `
+              "$backup\DarkPC-Info.txt" `
+              -Encoding UTF8
+
+          Write-Host ""
+          Write-Host "Backup preparado."
+
+
+         
+      - name: Dark PC - Guardar backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: dark-pc-backup
+          path: DarkPCBackup
+          overwrite: true
+          retention-days: 90
+          if-no-files-found: error
+
+
+        
+      - name: Dark PC - Verificar RDP
+        shell: powershell
+        run: |
+
+          Write-Host ""
+          Write-Host "Verificando RDP..."
+
+          $service = `
+            Get-Service `
+              -Name TermService
+
+          if ($service.Status -ne "Running") {
+
+              Start-Service `
+                -Name TermService
+
+              Start-Sleep `
+                -Seconds 5
+          }
+
+          $listener = `
+            Get-NetTCPConnection `
+              -LocalPort 3389 `
+              -State Listen `
+              -ErrorAction SilentlyContinue
+
+          if (-not $listener) {
+
+              Write-Error `
+                "El puerto 3389 no está escuchando."
+
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "RDP funcionando."
+          Write-Host "Puerto 3389 OK."
+
+
+      - name: Dark PC - Verificar Tailscale + RDP
+        shell: powershell
+        run: |
+
+          Write-Host ""
+          Write-Host "Probando conexión..."
+
+          $test = `
+            Test-NetConnection `
+              -ComputerName $env:TAILSCALE_IP `
+              -Port 3389
+
+          if (-not $test.TcpTestSucceeded) {
+
+              Write-Error `
+                "RDP no responde mediante Tailscale."
+
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "Tailscale + RDP funcionando correctamente."
+
+
+      - name: Dark PC - Estado final
+        shell: powershell
+        env:
+          DARKPC_USERNAME: ${{ secrets.DARKPC_USERNAME }}
+        run: |
+
+          Write-Host ""
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "              DARK PC ONLINE"
+          Write-Host "=============================================="
+          Write-Host ""
+          Write-Host "ESTADO: ONLINE"
+          Write-Host ""
+          Write-Host "PC:"
+          Write-Host $env:TAILSCALE_IP
+          Write-Host ""
+          Write-Host "USUARIO:"
+          Write-Host $env:DARKPC_USERNAME
+          Write-Host ""
+          Write-Host "PUERTO:"
+          Write-Host "3389"
+          Write-Host ""
+          Write-Host "GATEWAY:"
+          Write-Host "NINGUNO"
+          Write-Host ""
+          Write-Host "BACKUP:"
+          Write-Host "ACTIVO"
+          Write-Host ""
+          Write-Host "APLICACIONES:"
+          Write-Host "Godot"
+          Write-Host "Unity Hub"
+          Write-Host "Opera"
+          Write-Host "Steam"
+          Write-Host "VS Code"
+          Write-Host "Git"
+          Write-Host "7-Zip"
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host ""
+          Write-Host "WINDOWS APP"
+          Write-Host ""
+          Write-Host "PC: $env:TAILSCALE_IP"
+          Write-Host "Usuario: $env:DARKPC_USERNAME"
+          Write-Host "Gateway: Ninguno"
+          Write-Host ""
+          Write-Host "=============================================="
+
+
+      - name: Dark PC - Mantener activo
+        shell: powershell
+        run: |
+
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "            DARK PC ACTIVO"
+          Write-Host "=============================================="
+          Write-Host ""
+
+          while ($true) {
+
+              Write-Host `
+                "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Dark PC activo"
+
+              Start-Sleep `
+                -Seconds 300
+          }
+          
