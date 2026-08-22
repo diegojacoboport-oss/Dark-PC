@@ -622,7 +622,7 @@ jobs:
 
           Write-Host ""
           Write-Host "Personalización restaurada."
-           - name: Dark PC - Preparar nuevo backup
+      - name: Dark PC - Preparar nuevo backup
         shell: powershell
         env:
           DARKPC_USERNAME: ${{ secrets.DARKPC_USERNAME }}
