@@ -507,7 +507,7 @@ jobs:
             -Force
 
           Write-Host "Backup descargado."
-                - name: Dark PC - Restaurar archivos
+      - name: Dark PC - Restaurar archivos
         if: env.DARKPC_BACKUP_FOUND == 'true'
         shell: powershell
         env:
