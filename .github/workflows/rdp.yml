@@ -747,4 +747,30 @@ jobs:
           Write-Host ""
           Write-Host "Conecta desde Windows App:"
           Write-Host ""
-          Write-Host "PC: 
+          Write-Host "PC: $env:TAILSCALE_IP"
+          Write-Host "Usuario: $env:DARKPC_USERNAME"
+          Write-Host "Gateway: Ninguno"
+          Write-Host ""
+          Write-Host "=============================================="
+
+
+      # ============================================================
+      # MANTENER DARK PC
+      # ============================================================
+
+      - name: Dark PC - Mantener activo
+        shell: powershell
+        run: |
+
+          Write-Host ""
+          Write-Host "Dark PC permanece activo."
+          Write-Host ""
+
+          while ($true) {
+
+              Write-Host `
+                "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Dark PC activo"
+
+              Start-Sleep `
+                -Seconds 300
+          }
