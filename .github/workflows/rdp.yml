@@ -887,7 +887,6 @@ jobs:
           Write-Host "Unity Hub"
           Write-Host "Opera"
           Write-Host "Steam"
-          Write-Host "Roblox"
           Write-Host "VS Code"
           Write-Host "Git"
           Write-Host "7-Zip"
