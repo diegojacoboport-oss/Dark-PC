@@ -20,24 +20,36 @@ jobs:
 
           Write-Host "Configurando Remote Desktop..."
 
+          # Habilitar RDP
           Set-ItemProperty `
-            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-            -Name "fDenyTSConnections" `
+            -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' `
+            -Name 'fDenyTSConnections' `
             -Value 0 `
             -Force
 
+          # Mantener NLA habilitado
           Set-ItemProperty `
-            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name "UserAuthentication" `
-            -Value 0 `
+            -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name 'UserAuthentication' `
+            -Value 1 `
             -Force
 
+          # Seguridad RDP estándar
           Set-ItemProperty `
-            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name "SecurityLayer" `
-            -Value 0 `
+            -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name 'SecurityLayer' `
+            -Value 1 `
             -Force
 
+          # Configurar el servicio
+          Set-Service `
+            -Name TermService `
+            -StartupType Automatic
+
+          Start-Service `
+            -Name TermService
+
+          # Firewall para RDP
           netsh advfirewall firewall delete rule `
             name="CloudDesk-RDP"
 
@@ -48,11 +60,40 @@ jobs:
             protocol=TCP `
             localport=3389
 
-          Restart-Service `
-            -Name TermService `
-            -Force
+          # Asegurar que RDP esté escuchando
+          $listener = Get-NetTCPConnection `
+            -LocalPort 3389 `
+            -State Listen `
+            -ErrorAction SilentlyContinue
 
-          Write-Host "RDP configurado correctamente."
+          if (-not $listener) {
+
+              Write-Host "RDP todavía no escucha. Reiniciando servicio..."
+
+              Restart-Service `
+                -Name TermService `
+                -Force
+
+              Start-Sleep -Seconds 5
+
+              $listener = Get-NetTCPConnection `
+                -LocalPort 3389 `
+                -State Listen `
+                -ErrorAction SilentlyContinue
+          }
+
+          if (-not $listener) {
+
+              Write-Error `
+                "El puerto 3389 no está escuchando."
+
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "======================================"
+          Write-Host "RDP ESCUCHANDO EN 3389"
+          Write-Host "======================================"
 
 
       # ============================================================
