@@ -358,27 +358,7 @@ jobs:
           Write-Host ""
           Write-Host "Aplicaciones terminadas."
 
-      - name: Dark PC - Roblox
-        shell: powershell
-        run: |
-
-          Write-Host "Instalando Roblox..."
-
-          winget install `
-            --id Roblox.Roblox `
-            --exact `
-            --silent `
-            --accept-package-agreements `
-            --accept-source-agreements `
-            --disable-interactivity
-
-          if ($LASTEXITCODE -ne 0) {
-              Write-Warning `
-                "Roblox no pudo instalarse mediante winget."
-          } else {
-              Write-Host "Roblox instalado."
-          }
-
+      
       - name: Dark PC - Preparar restauración
         shell: powershell
         run: |
