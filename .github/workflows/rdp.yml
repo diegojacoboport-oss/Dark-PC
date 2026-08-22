@@ -757,24 +757,17 @@ jobs:
           # INFORMACIÓN DEL BACKUP
           # ========================================================
 
-          $info = @"
-DARK PC BACKUP
-
-Usuario:
-$username
-
-Fecha:
-$(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-
-Runner:
-$env:GITHUB_RUN_ID
-
-Sistema:
-$((Get-ComputerInfo).WindowsProductName)
-
-Build:
-$((Get-ComputerInfo).OsBuildNumber)
-"@
+          $info = @"DARK PC BACKUP
+          Usuario:
+          $username
+          Fecha:
+          $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+          Runner:
+          $env:GITHUB_RUN_ID
+          Sistema:
+          $((Get-ComputerInfo).WindowsProductName)
+          Build:
+          $((Get-ComputerInfo).OsBuildNumber)"@
 
           $info |
             Out-File `
@@ -785,6 +778,7 @@ $((Get-ComputerInfo).OsBuildNumber)
           Write-Host "Backup preparado."
 
 
+         
       - name: Dark PC - Guardar backup
         uses: actions/upload-artifact@v4
         with:
@@ -795,6 +789,7 @@ $((Get-ComputerInfo).OsBuildNumber)
           if-no-files-found: error
 
 
+        
       - name: Dark PC - Verificar RDP
         shell: powershell
         run: |
